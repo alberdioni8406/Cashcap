@@ -134,25 +134,42 @@ export async function fetchBcmr(categoryId) {
     getJson(`${CONFIG.API.BCMR}?category=${categoryId}`));
 }
 
-/** Live price + pools from Cauldron for a token. */
+/** Live price for a single token, via the confirmed-working Cauldron path shape. */
 export async function fetchCauldronPrice(categoryId) {
   const key = `price:${categoryId}`;
   return cached(key, CONFIG.TTL.PRICE, 'mem', () =>
-    getJson(`${CONFIG.API.CAULDRON}?type=price&category=${categoryId}`));
+    getJson(`${CONFIG.API.CAULDRON}?path=${encodeURIComponent(`price/${categoryId}/current`)}`));
 }
 
-/** Candlestick history for the price chart. */
+/**
+ * Candlestick history for the price chart. NOTE: unlike price/pools below,
+ * this path is not yet confirmed against a real Cauldron response — the
+ * indexer's documented prefixes don't include an obvious "candles" route.
+ * loadChart() in app.js already fails silently if this 404s, so the page
+ * still works; treat this as a placeholder until verified.
+ */
 export async function fetchCandles(categoryId, timeframe = '24h') {
   const key = `candles:${categoryId}:${timeframe}`;
   return cached(key, CONFIG.TTL.CANDLES, 'mem', () =>
-    getJson(`${CONFIG.API.CAULDRON}?type=candles&category=${categoryId}&tf=${timeframe}`));
+    getJson(`${CONFIG.API.CAULDRON}?path=${encodeURIComponent(`token/${categoryId}/candles`)}&tf=${timeframe}`));
 }
 
 /** All active Cauldron pools (used for the DeFi / liquidity leaderboard). */
 export async function fetchActivePools() {
   const key = 'pools:active';
   return cached(key, CONFIG.TTL.PRICE, 'mem', () =>
-    getJson(`${CONFIG.API.CAULDRON}?type=pools`));
+    getJson(`${CONFIG.API.CAULDRON}?path=pool/active`));
+}
+
+/**
+ * Bulk cached token list from Cauldron — the actual source of price/TVL/
+ * volume/market-cap, since TokenStork's directory carries none of that.
+ * Keyed by category so it can be merged onto TokenStork's identity data.
+ */
+export async function fetchCauldronTokenList({ limit = 500, by = 'tvl', order = 'desc' } = {}) {
+  const key = `cauldron-list:${limit}:${by}:${order}`;
+  return cached(key, CONFIG.TTL.PRICE, 'mem', () =>
+    getJson(`${CONFIG.API.CAULDRON}?path=tokens/list_cached&limit=${limit}&by=${by}&order=${order}`));
 }
 
 /** BCH/USD spot price. */

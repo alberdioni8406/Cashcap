@@ -67,11 +67,15 @@ function emptyState(message) {
 }
 
 // ---- Icon element with IPFS/gateway fallback ---------------------------------
-function iconImg(bcmr, size = 28) {
+// bcmr.uris.icon is used on the token detail page (per-token BCMR fetch);
+// directory rows use TokenStork's own `icon` field directly (rawIcon) since
+// fetching BCMR for every row in a table would be far too many requests.
+function iconImg(bcmrOrRawIcon, size = 28) {
   const img = el('img', {
     class: 'token-icon', width: String(size), height: String(size), alt: '', loading: 'lazy',
   });
-  const src = bcmr?.uris?.icon ? api.iconUrl(bcmr.uris.icon) : null;
+  const raw = typeof bcmrOrRawIcon === 'string' ? bcmrOrRawIcon : bcmrOrRawIcon?.uris?.icon;
+  const src = raw ? api.iconUrl(raw) : null;
   img.src = src || placeholderIcon();
   img.onerror = () => { img.src = placeholderIcon(); img.onerror = null; };
   return img;
@@ -83,6 +87,48 @@ function placeholderIcon() {
   );
 }
 
+// ---- Cauldron merge ------------------------------------------------------------
+// TokenStork's directory carries identity + supply only (no price/TVL/volume
+// — see api/tokens.js). This merges Cauldron's bulk token list onto it by
+// category so the rest of the app can keep reading t.priceUsd / t.tvlUsd /
+// t.volume24hUsd / t.marketCapUsd / t.change24h as before.
+//
+// UNVERIFIED: fetchCauldronTokenList()'s response shape hasn't been checked
+// against a live call yet (unlike tokens.js, which was fixed from a real
+// sample). `pick()` tries several plausible key-name variants so this
+// degrades to "no market data merged" rather than throwing if none match —
+// but the real fix is testing /api/cauldron?path=tokens/list_cached&limit=5
+// and tightening these key names to what actually comes back.
+function pick(obj, ...keys) {
+  for (const k of keys) if (obj?.[k] !== undefined && obj?.[k] !== null) return obj[k];
+  return null;
+}
+
+function toArray(x) {
+  if (Array.isArray(x)) return x;
+  return x?.tokens || x?.items || x?.data || [];
+}
+
+function mergeCauldronData(tokens, cauldronRaw) {
+  const map = new Map();
+  for (const c of toArray(cauldronRaw)) {
+    const cat = pick(c, 'category', 'categoryId', 'token', 'id');
+    if (cat) map.set(cat, c);
+  }
+  return tokens.map((t) => {
+    const c = map.get(t.category);
+    if (!c) return t;
+    return {
+      ...t,
+      priceUsd: pick(c, 'priceUsd', 'price_usd', 'price'),
+      change24h: pick(c, 'change24h', 'change_24h', 'priceChange24h', 'priceChangePercent24h'),
+      marketCapUsd: pick(c, 'marketCapUsd', 'market_cap_usd', 'marketCap'),
+      tvlUsd: pick(c, 'tvlUsd', 'tvl_usd', 'valueLockedUsd', 'liquidityUsd') || 0,
+      volume24hUsd: pick(c, 'volume24hUsd', 'volume_24h_usd', 'volume24h', 'volumeUsd24h') || 0,
+    };
+  });
+}
+
 // ---- Home dashboard -----------------------------------------------------------
 async function renderHome() {
   view.innerHTML = '';
@@ -92,12 +138,13 @@ async function renderHome() {
   grid.appendChild(skeleton(1));
 
   try {
-    const [dir, bch, block] = await Promise.all([
+    const [dir, bch, block, cauldronList] = await Promise.all([
       api.fetchTokenDirectory(1, 500),
       api.fetchBchPrice().catch(() => null),
       api.fetchLatestBlock().catch(() => null),
+      api.fetchCauldronTokenList({ limit: 500 }).catch(() => []),
     ]);
-    const tokens = dir?.items || [];
+    const tokens = mergeCauldronData(dir?.items || [], cauldronList);
     const listed = tokens.filter((t) => (t.tvlUsd || 0) >= CONFIG.MIN_LIQUIDITY_USD);
     const tvl = listed.reduce((s, t) => s + (t.tvlUsd || 0), 0);
     const vol24 = listed.reduce((s, t) => s + (t.volume24hUsd || 0), 0);
@@ -153,7 +200,7 @@ function moversCol(title, list) {
 function tokenRowMini(t) {
   const row = el('a', { class: 'token-row-mini', href: `#/token/${encodeURIComponent(t.category)}` });
   row.append(
-    iconImg(t.bcmr, 22),
+    iconImg(t.icon, 22),
     el('span', { class: 'symbol' }, t.symbol || shortId(t.category, 4, 4)),
     el('span', { class: `pct ${pctClass(t.change24h)}` }, fmtPct(t.change24h)),
   );
@@ -185,7 +232,7 @@ function recentTable(tokens, limit) {
 
 function tokenNameCell(t) {
   const cell = el('a', { class: 'token-name-cell', href: `#/token/${encodeURIComponent(t.category)}` });
-  cell.append(iconImg(t.bcmr, 20), el('span', {}, t.symbol || shortId(t.category)));
+  cell.append(iconImg(t.icon, 20), el('span', {}, t.symbol || shortId(t.category)));
   return cell;
 }
 
@@ -199,8 +246,11 @@ async function renderMarkets() {
   view.appendChild(el('button', { class: 'btn btn-ghost', onclick: exportCsv }, 'Export CSV'));
 
   try {
-    const dir = await api.fetchTokenDirectory(1, 2000);
-    state.directory = dir.items || [];
+    const [dir, cauldronList] = await Promise.all([
+      api.fetchTokenDirectory(1, 2000),
+      api.fetchCauldronTokenList({ limit: 2000 }).catch(() => []),
+    ]);
+    state.directory = mergeCauldronData(dir.items || [], cauldronList);
     drawMarketsTable(tableHost);
   } catch {
     tableHost.innerHTML = '';
