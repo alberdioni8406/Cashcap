@@ -2,27 +2,28 @@
 // TokenStork does not send CORS headers, so the browser can't call it
 // directly; this function fetches server-side and re-serves the result.
 //
-// NOTE: TokenStork's public API surface has moved before. If this 404s,
-// check https://tokenstork.com for the current documented base path and
-// update TOKENSTORK_BASE below — the rest of the app only depends on the
-// { items: [...], total } shape returned here, not on TokenStork's own shape.
+// Field mapping below is verified against a real TokenStork response
+// (2026-08-22), shape: { tokens: [...], count, limit, offset, total }.
+// IMPORTANT: this endpoint carries NO price/TVL/volume/market-cap data —
+// TokenStork's directory is identity + supply + holders only. Those market
+// figures have to come from a Cauldron merge step (not yet wired in — see
+// cauldron.js, which is still pointed at an unverified base URL).
 const TOKENSTORK_BASE = 'https://tokenstork.com/api/tokens';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   const { page = '1', pageSize = '50' } = req.query;
+  const limit = Number(pageSize);
+  const offset = (Number(page) - 1) * limit;
 
   try {
-    const upstream = await fetch(`${TOKENSTORK_BASE}?page=${page}&limit=${pageSize}`, {
+    const upstream = await fetch(`${TOKENSTORK_BASE}?limit=${limit}&offset=${offset}`, {
       headers: { accept: 'application/json' },
     });
     if (!upstream.ok) throw new Error(`TokenStork ${upstream.status}`);
     const raw = await upstream.json();
 
-    // Normalize into the shape the frontend expects. Field names here are
-    // best-effort against TokenStork's documented response — adjust the
-    // mapping if their schema differs.
-    const items = (raw.tokens || raw.items || raw.data || []).map(normalize);
+    const items = (raw.tokens || []).map(normalize);
 
     res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=600');
     res.status(200).json({ items, total: raw.total ?? items.length, page: Number(page) });
@@ -31,19 +32,42 @@ export default async function handler(req, res) {
   }
 }
 
+// TokenStork returns "=" as a literal placeholder for unnamed/undecoded
+// tokens (no BCMR name registered) rather than omitting the field.
+function cleanLabel(v) {
+  return v && v !== '=' ? v : null;
+}
+
+function mapType(tokenType) {
+  if (tokenType === 'FT+NFT') return 'Hybrid';
+  if (tokenType === 'NFT') return 'NFT';
+  return 'FT';
+}
+
 function normalize(t) {
   return {
-    category: t.category || t.categoryId || t.id,
-    symbol: t.symbol || t.ticker,
-    name: t.name,
-    type: t.nftCapability ? (t.amount > 0 ? 'Hybrid' : 'NFT') : 'FT',
-    holders: t.holderCount ?? t.holders ?? null,
-    priceUsd: t.priceUsd ?? null,
-    change24h: t.change24h ?? null,
-    marketCapUsd: t.marketCapUsd ?? null,
-    tvlUsd: t.tvlUsd ?? 0,
-    volume24hUsd: t.volume24hUsd ?? 0,
-    genesisTime: t.genesisTime ? Date.parse(t.genesisTime) : null,
-    bcmr: t.bcmr || null,
+    category: t.id,
+    symbol: cleanLabel(t.symbol),
+    name: cleanLabel(t.name),
+    type: mapType(t.tokenType),
+    holders: t.holderCount ?? null,
+    circulatingSupply: t.currentSupply ?? null,
+    isVerified: !!t.isVerifiedOnchain,
+    hasActiveMinting: !!t.hasActiveMinting,
+    // Not present at this endpoint — populated later by a Cauldron merge.
+    priceUsd: null,
+    change24h: null,
+    marketCapUsd: null,
+    tvlUsd: 0,
+    volume24hUsd: 0,
+    // TokenStork timestamps are Unix seconds, not ISO strings.
+    genesisTime: t.genesisTime ? t.genesisTime * 1000 : null,
+    firstSeenAt: t.firstSeenAt ? t.firstSeenAt * 1000 : null,
+    genesisBlock: t.genesisBlock ?? null,
+    // Icon field shape is unconfirmed (every sampled row had icon: null so
+    // far) — if it turns out to be a bare IPFS CID rather than a full URL,
+    // iconUrl() in api.js will need a gateway prefix added here.
+    icon: t.icon || null,
+    bcmr: null,
   };
 }
