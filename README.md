@@ -110,10 +110,22 @@ vercel dev
 
 - TokenStork and BCMR don't send CORS headers, so all calls to them are
   proxied through `/api` rather than fetched directly from the browser.
-- Upstream API shapes are normalized in the proxy layer (`api/*.js`) against
-  each provider's best-documented response at time of writing. If a provider
-  changes its schema, update the `normalize()` mapping in the relevant proxy
-  file — the frontend only depends on CashCap's own normalized shape.
+  Cauldron's indexer already sends permissive CORS itself — its proxy exists
+  only for a short edge cache and a single controlled egress point.
+- **Trading volume is currently unavailable.** Cauldron's `tokens/list_cached`
+  response has no confirmed USD-denominated volume field (`trade_volume`
+  exists but its unit is unconfirmed — token-native? BCH? — so it's left
+  unmapped rather than guessed). Volume shows as "—" everywhere rather than
+  a fabricated number.
+- **Price charts are unverified.** The candlestick endpoint path in
+  `api/cauldron.js`'s caller (`token/<category>/candles`) has not been
+  confirmed against a real response the way the directory and price-list
+  endpoints have. It fails silently if wrong — the token page still loads,
+  just without a chart.
+- TVL is derived as `tvl_sats ÷ 1e8 × BCH/USD` from Cauldron's per-token
+  `tvl_sats` field; market cap is derived as `price_now_usd × circulating
+  supply` (using TokenStork's supply and Cauldron's BCMR-reported decimals).
+  Neither is provided pre-computed by either source.
 - Token icons are routed through `/api/icon-proxy`, which fetches
   server-side and blocks private/loopback/link-local hosts (including after
   redirects). This exists because icon URLs come from third-party issuers,
