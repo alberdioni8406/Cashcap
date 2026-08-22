@@ -184,10 +184,15 @@ export async function fetchLatestBlock() {
   return cached(key, CONFIG.TTL.BLOCK_HEIGHT, 'mem', () => getJson(CONFIG.API.LATEST_BLOCK));
 }
 
-/** Icon URL, safely proxied server-side (blocks LAN/loopback SSRF vectors). */
+/** Icon URL, safely proxied server-side (blocks LAN/loopback SSRF vectors).
+ * Cauldron/BCMR icons commonly use ipfs:// URIs, which aren't fetchable
+ * directly — resolve those through a gateway first. */
 export function iconUrl(rawUrl) {
   if (!rawUrl) return null;
-  return `${CONFIG.API.ICON}?u=${encodeURIComponent(rawUrl)}`;
+  const resolved = rawUrl.startsWith('ipfs://')
+    ? `${CONFIG.IPFS_GATEWAYS[0]}${rawUrl.slice('ipfs://'.length)}`
+    : rawUrl;
+  return `${CONFIG.API.ICON}?u=${encodeURIComponent(resolved)}`;
 }
 
 /** Clears every cache tier — used by the manual "Refresh" control. */

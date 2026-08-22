@@ -89,44 +89,61 @@ function placeholderIcon() {
 
 // ---- Cauldron merge ------------------------------------------------------------
 // TokenStork's directory carries identity + supply only (no price/TVL/volume
-// — see api/tokens.js). This merges Cauldron's bulk token list onto it by
-// category so the rest of the app can keep reading t.priceUsd / t.tvlUsd /
-// t.volume24hUsd / t.marketCapUsd / t.change24h as before.
-//
-// UNVERIFIED: fetchCauldronTokenList()'s response shape hasn't been checked
-// against a live call yet (unlike tokens.js, which was fixed from a real
-// sample). `pick()` tries several plausible key-name variants so this
-// degrades to "no market data merged" rather than throwing if none match —
-// but the real fix is testing /api/cauldron?path=tokens/list_cached&limit=5
-// and tightening these key names to what actually comes back.
-function pick(obj, ...keys) {
-  for (const k of keys) if (obj?.[k] !== undefined && obj?.[k] !== null) return obj[k];
-  return null;
-}
-
+// — see api/tokens.js). This merges Cauldron's bulk cached list onto it by
+// category. Field mapping below is verified against a real
+// tokens/list_cached response (2026-08-23):
+//   token_id            → category (join key)
+//   display_name/symbol → fallback name/symbol when TokenStork has none
+//   price_now_usd       → current USD price
+//   change_24h_usd_bp / change_7d_usd_bp → basis points (÷100 for %)
+//   tvl_sats            → TVL in BCH satoshis (÷1e8 × BCH/USD for USD TVL)
+//   bcmr.uris.icon      → usually an ipfs:// URI, richer than TokenStork's
+//                         own (frequently null) icon field
+//   price_series_7d     → sparkline points
+// NOT present: any USD trading-volume figure. `trade_volume`'s denomination
+// is unconfirmed (BCH? token units?), so volume is left as null (honest
+// "unavailable") rather than guessed — see README known limitations.
 function toArray(x) {
   if (Array.isArray(x)) return x;
   return x?.tokens || x?.items || x?.data || [];
 }
 
-function mergeCauldronData(tokens, cauldronRaw) {
+function mergeCauldronData(tokens, cauldronRaw, bchUsd) {
   const map = new Map();
   for (const c of toArray(cauldronRaw)) {
-    const cat = pick(c, 'category', 'categoryId', 'token', 'id');
+    const cat = c.token_id || c?.bcmr?.token?.category;
     if (cat) map.set(cat, c);
   }
   return tokens.map((t) => {
     const c = map.get(t.category);
     if (!c) return t;
+    const decimals = c.bcmr?.token?.decimals ?? null;
+    const supply = t.circulatingSupply != null && decimals != null
+      ? Number(t.circulatingSupply) / 10 ** decimals
+      : null;
+    const priceUsd = c.price_now_usd ?? null;
     return {
       ...t,
-      priceUsd: pick(c, 'priceUsd', 'price_usd', 'price'),
-      change24h: pick(c, 'change24h', 'change_24h', 'priceChange24h', 'priceChangePercent24h'),
-      marketCapUsd: pick(c, 'marketCapUsd', 'market_cap_usd', 'marketCap'),
-      tvlUsd: pick(c, 'tvlUsd', 'tvl_usd', 'valueLockedUsd', 'liquidityUsd') || 0,
-      volume24hUsd: pick(c, 'volume24hUsd', 'volume_24h_usd', 'volume24h', 'volumeUsd24h') || 0,
+      symbol: t.symbol || c.display_symbol || null,
+      name: t.name || c.display_name || null,
+      priceUsd,
+      change24h: c.change_24h_usd_bp != null ? c.change_24h_usd_bp / 100 : null,
+      change7d: c.change_7d_usd_bp != null ? c.change_7d_usd_bp / 100 : null,
+      tvlUsd: bchUsd && c.tvl_sats != null ? (c.tvl_sats / 1e8) * bchUsd : null,
+      volume24hUsd: null, // unavailable — see comment above
+      marketCapUsd: priceUsd != null && supply != null ? priceUsd * supply : null,
+      cauldronIcon: c.bcmr?.uris?.icon || null,
+      sparkline: c.price_series_7d || null,
     };
   });
+}
+
+// ---- Aggregate helper: sum a numeric field, treating "no data anywhere" as
+// null (shows "—") rather than a misleading $0. ------------------------------
+function sumUsd(tokens, key) {
+  const vals = tokens.map((t) => t[key]).filter((v) => v != null);
+  if (!vals.length) return null;
+  return vals.reduce((a, b) => a + b, 0);
 }
 
 // ---- Home dashboard -----------------------------------------------------------
@@ -144,10 +161,10 @@ async function renderHome() {
       api.fetchLatestBlock().catch(() => null),
       api.fetchCauldronTokenList({ limit: 500 }).catch(() => []),
     ]);
-    const tokens = mergeCauldronData(dir?.items || [], cauldronList);
+    const tokens = mergeCauldronData(dir?.items || [], cauldronList, bch?.usd);
     const listed = tokens.filter((t) => (t.tvlUsd || 0) >= CONFIG.MIN_LIQUIDITY_USD);
-    const tvl = listed.reduce((s, t) => s + (t.tvlUsd || 0), 0);
-    const vol24 = listed.reduce((s, t) => s + (t.volume24hUsd || 0), 0);
+    const tvl = sumUsd(listed, 'tvlUsd');
+    const vol24 = sumUsd(listed, 'volume24hUsd');
     const new24 = tokens.filter((t) => Date.now() - (t.genesisTime || 0) < 86400000).length;
 
     grid.innerHTML = '';
@@ -200,7 +217,7 @@ function moversCol(title, list) {
 function tokenRowMini(t) {
   const row = el('a', { class: 'token-row-mini', href: `#/token/${encodeURIComponent(t.category)}` });
   row.append(
-    iconImg(t.icon, 22),
+    iconImg(t.cauldronIcon || t.icon, 22),
     el('span', { class: 'symbol' }, t.symbol || shortId(t.category, 4, 4)),
     el('span', { class: `pct ${pctClass(t.change24h)}` }, fmtPct(t.change24h)),
   );
@@ -232,7 +249,7 @@ function recentTable(tokens, limit) {
 
 function tokenNameCell(t) {
   const cell = el('a', { class: 'token-name-cell', href: `#/token/${encodeURIComponent(t.category)}` });
-  cell.append(iconImg(t.icon, 20), el('span', {}, t.symbol || shortId(t.category)));
+  cell.append(iconImg(t.cauldronIcon || t.icon, 20), el('span', {}, t.symbol || shortId(t.category)));
   return cell;
 }
 
@@ -246,11 +263,12 @@ async function renderMarkets() {
   view.appendChild(el('button', { class: 'btn btn-ghost', onclick: exportCsv }, 'Export CSV'));
 
   try {
-    const [dir, cauldronList] = await Promise.all([
+    const [dir, cauldronList, bch] = await Promise.all([
       api.fetchTokenDirectory(1, 2000),
       api.fetchCauldronTokenList({ limit: 2000 }).catch(() => []),
+      api.fetchBchPrice().catch(() => null),
     ]);
-    state.directory = mergeCauldronData(dir.items || [], cauldronList);
+    state.directory = mergeCauldronData(dir.items || [], cauldronList, bch?.usd);
     drawMarketsTable(tableHost);
   } catch {
     tableHost.innerHTML = '';
