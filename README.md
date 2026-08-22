@@ -22,6 +22,50 @@ pure frontend, zero private keys, zero wallet connection in v1.
 - Vercel serverless functions under `/api` solely to work around upstream
   CORS restrictions and to proxy token icons safely (see Known limitations).
 
+## Architecture
+
+```
+cashcap/
+├── index.html          # App shell: topbar (nav, search, theme, refresh), #view mount point
+├── css/
+│   └── styles.css      # Single stylesheet, CSS custom properties for theming
+├── js/
+│   ├── app.js          # Router + all view renderers (home, markets, token detail, watchlist, compare)
+│   ├── api.js          # Data layer: cached fetch wrappers around every external source
+│   ├── config.js       # API paths, cache TTLs, feature constants
+│   └── utils.js        # Formatting, DOM helper (el()), debounce, CSV export
+├── api/                # Vercel serverless functions (Node runtime) — CORS/SSRF relief only
+│   ├── tokens.js        → proxies TokenStork directory listing
+│   ├── token-detail.js  → proxies TokenStork single-category detail
+│   ├── bcmr.js          → proxies Paytaca BCMR metadata
+│   ├── cauldron.js      → proxies Cauldron indexer (price / candles / pools)
+│   ├── bch-price.js     → BCH/USD (CoinGecko, CryptoCompare fallback)
+│   ├── latest-block.js  → current block height (Haskoin)
+│   └── icon-proxy.js    → fetches token icons server-side, blocks private/loopback hosts
+├── vercel.json
+├── package.json
+└── README.md
+```
+
+**Why a frontend/backend split at all, if this is "pure frontend"?** The
+`/api` functions do no business logic — they exist only because TokenStork
+and BCMR don't send CORS headers (so the browser can't call them directly)
+and because rendering third-party icon URLs directly would let a malicious
+issuer probe a visitor's LAN. Every one of them is a thin pass-through: fetch
+upstream, normalize the shape, cache-control header, done. All routing,
+filtering, sorting, and rendering logic lives in the browser.
+
+**Data flow:** `app.js` (view) → `api.js` (cache check → miss → `fetch()`)
+→ `/api/*.js` (CORS/SSRF relief → upstream provider) → response flows back
+up and is cached at the tier `api.js` decided (memory for live prices,
+localStorage for metadata, IndexedDB for the full directory) before being
+handed to the view to render.
+
+**Routing:** hash-based (`#/`, `#/markets`, `#/token/<category>`,
+`#/watchlist`, `#/compare`), dispatched from a single `router()` in
+`app.js` — no history API, no server-side routes needed, so it works
+identically as a static file with no rewrites configured.
+
 ## Data sources & credit
 
 | Source | Used for |
