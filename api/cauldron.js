@@ -5,7 +5,7 @@
 // Radar build (indexer.riften.net/cauldron). If Riften moves the indexer,
 // update CAULDRON_BASE — everything downstream depends only on this file's
 // normalized response, not on Cauldron's raw shape.
-const CAULDRON_BASE = 'https://indexer.cauldron.quest';
+const CAULDRON_BASE = 'https://indexer.cauldron.quest/cauldron';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
