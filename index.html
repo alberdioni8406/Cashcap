@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CashCap — CashTokens Market Data</title>
+<meta name="description" content="Live market data, TVL, and analytics for every Bitcoin Cash CashToken." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css" />
+<link rel="icon" href="data:,">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/">
+      <span class="brand-mark">₡</span> CashCap
+    </a>
+    <nav class="main-nav">
+      <a class="nav-link" href="#/">Home</a>
+      <a class="nav-link" href="#/markets">Markets</a>
+      <a class="nav-link" href="#/watchlist">Watchlist</a>
+      <a class="nav-link" href="#/compare">Compare</a>
+    </nav>
+    <div class="topbar-actions">
+      <input id="global-search" class="search-input" type="search" placeholder="Search tokens… (⌘K)" />
+      <button id="refresh-btn" class="icon-btn" title="Refresh data" aria-label="Refresh data">⟳</button>
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <footer class="site-footer">
+    <p>Data: TokenStork · Cauldron Indexer (Riften Labs) · Paytaca BCMR · BCH/USD via CoinGecko/CryptoCompare.</p>
+    <p class="disclaimer">Not financial advice. CashCap aggregates public data for informational purposes only.</p>
+  </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

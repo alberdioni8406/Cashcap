@@ -1,0 +1,7 @@
+{
+  "name": "cashcap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CashCap — live market data aggregator for Bitcoin Cash CashTokens.",
+  "engines": { "node": ">=18" }
+}
