@@ -1,54 +1,96 @@
-// /api/cauldron — proxies the Riften Labs Cauldron indexer for live prices,
-// candlesticks, and active liquidity pools.
+// api/cauldron.js
 //
-// Base verified against the CashCompass/BCH Lab family's existing Cauldron
-// Radar build (indexer.riften.net/cauldron). If Riften moves the indexer,
-// update CAULDRON_BASE — everything downstream depends only on this file's
-// normalized response, not on Cauldron's raw shape.
-const CAULDRON_BASE = 'https://indexer.riften.net/cauldron';
+// Thin serverless proxy in front of the official Riften Labs Cauldron indexer
+// (https://docs.riftenlabs.com/cauldron/API/cauldron/). The indexer already
+// serves permissive CORS headers (it's called client-side by the official
+// Cauldron DEX at app.cauldron.quest), so this proxy isn't strictly required
+// for the app to function — but it protects the app if that ever changes,
+// lets us set a short edge cache (the data changes at most every few
+// seconds), and keeps every outbound request going through one place we
+// control instead of scattering the upstream hostname across the frontend.
+//
+// Usage from the frontend:
+//   /api/cauldron?path=tokens/list_cached&limit=100&by=tvl&order=desc
+//
+// `path` is anything documented at https://docs.riftenlabs.com/cauldron/API/cauldron/
+// (e.g. "tokens/list_cached", "price/<token>/current", "pool/active").
+// Every other query param is forwarded through unchanged.
 
-export default async function handler(req, res) {
+const UPSTREAM_BASE = 'https://indexer.riften.net/cauldron/';
+
+// Allow-list of path prefixes we're willing to proxy. This is a public,
+// read-only, keyless API, but we still don't want this function turned into
+// an open proxy for arbitrary URLs.
+const ALLOWED_PREFIXES = [
+  'contract/',
+  'pool/',
+  'price/',
+  'token/',
+  'tokens/',
+  'tx/',
+  'user/',
+  'valuelocked',
+  'volume',
+];
+
+function isAllowed(path) {
+  return ALLOWED_PREFIXES.some((p) => path === p || path.startsWith(p));
+}
+
+module.exports = async (req, res) => {
+  // CORS: allow this to be called from any origin the app is deployed to.
   res.setHeader('Access-Control-Allow-Origin', '*');
-  const { type, category, tf = '24h' } = req.query;
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+
+  if (req.method !== 'GET') {
+    res.status(405).json({ error: 'Only GET is supported.' });
+    return;
+  }
+
+  const { path, ...rest } = req.query;
+
+  if (!path || Array.isArray(path)) {
+    res.status(400).json({ error: 'Missing required "path" query parameter.' });
+    return;
+  }
+
+  const cleanPath = path.replace(/^\/+/, '');
+
+  if (!isAllowed(cleanPath)) {
+    res.status(400).json({ error: 'Path not allowed.' });
+    return;
+  }
+
+  const upstreamUrl = new URL(cleanPath, UPSTREAM_BASE);
+  for (const [key, value] of Object.entries(rest)) {
+    if (Array.isArray(value)) {
+      value.forEach((v) => upstreamUrl.searchParams.append(key, v));
+    } else if (value !== undefined) {
+      upstreamUrl.searchParams.set(key, value);
+    }
+  }
 
   try {
-    if (type === 'price') {
-      if (!category) return res.status(400).json({ error: 'missing_category' });
-      const upstream = await fetch(`${CAULDRON_BASE}/price/${encodeURIComponent(category)}`);
-      if (!upstream.ok) throw new Error(`Cauldron ${upstream.status}`);
-      const p = await upstream.json();
-      res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
-      return res.status(200).json({
-        priceUsd: p.priceUsd ?? p.price_usd ?? null,
-        priceBch: p.priceBch ?? p.price_bch ?? null,
-        change24h: p.change24h ?? null,
-        liquidityUsd: p.liquidityUsd ?? p.tvlUsd ?? 0,
-      });
-    }
+    const upstreamRes = await fetch(upstreamUrl.toString(), {
+      headers: { Accept: 'application/json' },
+    });
 
-    if (type === 'candles') {
-      if (!category) return res.status(400).json({ error: 'missing_category' });
-      const upstream = await fetch(`${CAULDRON_BASE}/candles/${encodeURIComponent(category)}?tf=${tf}`);
-      if (!upstream.ok) throw new Error(`Cauldron ${upstream.status}`);
-      const c = await upstream.json();
-      const candles = (c.candles || c.data || []).map((row) => ({
-        t: row.t ?? row.time ?? row.timestamp,
-        open: row.open, high: row.high, low: row.low, close: row.close,
-      }));
-      res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
-      return res.status(200).json(candles);
-    }
+    const bodyText = await upstreamRes.text();
 
-    if (type === 'pools') {
-      const upstream = await fetch(`${CAULDRON_BASE}/pools/active`);
-      if (!upstream.ok) throw new Error(`Cauldron ${upstream.status}`);
-      const p = await upstream.json();
-      res.setHeader('Cache-Control', 's-maxage=30, stale-while-revalidate=60');
-      return res.status(200).json(p.pools || p.data || []);
-    }
-
-    return res.status(400).json({ error: 'unknown_type' });
+    // Cache at the edge for a few seconds — the indexer updates roughly
+    // block-to-block, so this keeps the dashboard fast without serving
+    // meaningfully stale data.
+    res.setHeader('Cache-Control', 'public, s-maxage=15, stale-while-revalidate=45');
+    res.status(upstreamRes.status);
+    res.setHeader('Content-Type', upstreamRes.headers.get('content-type') || 'application/json');
+    res.send(bodyText);
   } catch (err) {
-    res.status(502).json({ error: 'cauldron_unreachable', message: err.message });
+    res.status(502).json({ error: 'Upstream indexer request failed.', detail: String(err) });
   }
-}
+};
